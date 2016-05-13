@@ -4,68 +4,101 @@ var _ = require('lodash')
 var path = require('path');
 var request = require('request');
 var string = require('lodash/string')
-var escapeRegExp = require('lodash/string/escapeRegExp')
 var cheerio = require('cheerio');
-var squel = require('squel');
+var mod_dns = require('dns');
 var pg = require('pg');
-var constring = "postgres://nodejs:nodejs@localhost/webscraper";
-var options = {
-	'User-Agent': 'Mozilla/5.0 (Windows NT 6.3; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/33.0.1750.117 Safari/537.36'
-}
+
 var subreddit = "worldnews"
-squelPostgres = squel.useFlavour('postgres');
-console.log("Requesting!");
+var redditStructure = {}
+var topSubredditList = [];
+redditStructure["topSubredditList"] = topSubredditList;
+var submissionsList  = [];
+var mod_vasync = require('vasync');
+var mod_util = require('util');
+var async = require('async');
 
 
+	function requestPages (subreddit,callback){
+			request("http://www.reddit.com"+subreddit+"/top/?sort=top&t=all", function (error, response, body) {
+				if (!error && response.statusCode == 200){
+					$ = cheerio.load(body);
+					$('a.title.may-blank').each(function(i,element){
+					submissionsList.push($(this).attr('href'))
+					})
+					callback(null,subreddit);
+				}
+				else{
+					if (response.statusCode == 500) {
+						console.log("Server Down")
 
-    function sendtoDatabase(querytoSend){
-	pg.connect(constring, function (err,client,done) {
-		if(err) {
-	    	return console.error('Error connecting to database',err);
-		};
-		client.query(querytoSend, function(err, result) {
-			if (err) {
-				console.log(querytoSend)
-				return console.error('error running query', err);
-			}
-			done();
-		});
-	})
+					}
+					console.log(error);
+					callback(error);
+				}
+				
+			})
+
 	};
+	function requestCommentsPages (subreddit,callback){
+		request($(this).attr('href'),function (error,response,body){
+			console.log(body)
+			callback(null,response)
+		})
+	}
+
+	function loadSubredditArray(callback){
+		console.log("Loading Subreddits");
+		request('http://redditmetrics.com/top', function (error, response, body) {
+  			if (!error && response.statusCode == 200) {
+    		
+    		$ = cheerio.load(body);
+
+    		$('td.tod').children('a').each(function (i,element){
+    		redditStructure.topSubredditList.push($(this).attr('href'));
+    		});
+    		console.log("Top Subreddits Loaded");
+    		console.log("Top Subreddit List Length: "+redditStructure.topSubredditList.length)
+    		callback(null,redditStructure.topSubredditList.length)
+  			}else if(response.statusCode == 500){
+  				console.log("Website Down: "+response.statusCode);
+  				callback(response.statusCode);
+  			}
+  			else{
+
+  				callback(response);
+  			}
+		})
+	}	
+	function loadTopPages (callback){
+		console.log("Start Load Top Pages");
+        mod_vasync.forEachPipeline({
+    	'func': requestPages,
+    	'inputs': redditStructure.topSubredditList
+			}, function (err, results) {
+			console.log("Load Top Pages Completed")
+    		console.log('error: %s', err);
+    		console.log('results: %s', mod_util.inspect(results, null, 3));
+    		callback(null,results);
+	    	})
+	 };
+	 function loadCommentsPages(callback){
+	 	console.log( mod_vasync.forEachPipeline({
+    	'func': requestCommentsPages,
+    	'inputs': submissionsList
+			}, function (err, results) {
+    		console.log('error: %s', err);
+    		console.log('results: %s', mod_util.inspect(results, null, 3));
+	    	}))
+	 };
+ 	 
+		
+
+	async.series([
+		loadSubredditArray,
+		loadTopPages
+		]);
+	
 
 
-	request('http://www.reddit.com/r/' + subreddit, function(error, response, html) {
-		if (!error && response.statusCode == 200) {
 
-			var $ = cheerio.load(html)
-			$('.thing').each(function(i, element) {
-				var rank = $(this).children('span.rank')
-				var title = $(this).children('div.entry.unvoted').children('p.title').children('a.title.may-blank').text();
-					cleantitle=title.replace("'","@@").replace("'","@@").replace("'","@@");
-				var upVotes = $(this).children('div.midcol.unvoted').children('div.score.likes').text();
-					cleanupvotes = upVotes.replace("•","not_available")
-				var downVotes = $(this).children('div.midcol.unvoted').children('div.score.dislikes').text();
-					cleandownvotes = downVotes.replace("•","not_available")
-				var linktoContent = encodeURI($(this).children('div.entry.unvoted').children('p.title').children('a.title.may-blank').attr('href'));
-				var domainLink = encodeURI($(this).children('div.entry.unvoted').children('p.title').children('span.domain'));
-				var commentLink = encodeURI($(this).children('div.entry.unvoted').children('ul.flat-list.buttons').children('li.first').children('a.comments.may-blank').attr('href'));
-
-				var query =             squelPostgres.insert()
-											.into(subreddit)
-											.set('title', cleantitle,{singleQuoteReplacement:"@@"},{replaceSingleQuotes:true},{
-												dontQuote:true})
-											.set('upVotes',cleanupvotes)
-											.set('downVotes',cleandownvotes)
-											.set('domainLink',domainLink)
-											.set('commentLink',commentLink)
-											.toString();	
-
-
-				sendtoDatabase(query);
-			});
-
-		}
-
-	});
-
-
+	
